@@ -172,6 +172,13 @@ async function buildOne(job) {
   if ((await run(`rm -f "${zip}" && zip -r -q -X "${zip}" .`, output, log, true)) !== 0) {
     return failed("the built site could not be zipped");
   }
+  // An app's schema travels with its build: Unisites applies what is new on deploy.
+  if (app && existsSync(join(dir, "migrations"))) {
+    log.line("+ migrations/");
+    if ((await run(`zip -r -q -X "${zip}" migrations -i 'migrations/*.sql'`, dir, log, true)) !== 0) {
+      return failed("the migrations could not be added");
+    }
+  }
   log.line(`→ uploading to Unisites`);
   await log.close();
 

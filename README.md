@@ -37,4 +37,6 @@ repository (`npm ci`, `pnpm`, `yarn`, `npm run build`, `dist/`).
 An app with a server (Next.js on [vinext](https://github.com/cloudflare/vinext))
 is built the same way; its build is a Worker (Cloudflare's Build Output,
 `.cloudflare/output/v0/workers/default`), which Unisites deploys as the app's
-own Worker, with the bindings and secrets set there.
+own Worker, with the bindings and secrets set there. Its database schema is
+its `migrations/*.sql` (next to `package.json`), applied on Unisites in order,
+each once, before the version goes live.
