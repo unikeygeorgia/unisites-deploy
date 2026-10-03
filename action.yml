@@ -1,0 +1,14 @@
+name: Unisites deploy
+description: Builds this repository and puts the result on Unisites (app.unisites.ge). No key is needed; GitHub vouches for the run.
+author: Unisites
+branding:
+  icon: upload-cloud
+  color: blue
+inputs:
+  url:
+    description: Where Unisites is.
+    required: false
+    default: https://app.unisites.ge
+runs:
+  using: node24
+  main: index.mjs
