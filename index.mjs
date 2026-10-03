@@ -51,6 +51,9 @@ async function call(path, body, contentType = "application/json") {
   return { answer, ok: response.ok, status: response.status };
 }
 
+// Terminal colours: the log here keeps them, the page on Unisites has no use for them.
+const COLOURS = /\u001b\[[0-9;?]*[ -\/]*[@-~]/g;
+
 /** Sends a build's lines to Unisites in order, a batch every two seconds. */
 function logSender(slug) {
   let pending = "";
@@ -65,7 +68,7 @@ function logSender(slug) {
   const timer = setInterval(flush, 2000);
   return {
     line(text) {
-      pending += `${text}\n`;
+      pending += `${text.replace(COLOURS, "")}\n`;
       if (pending.length > 16 * 1024) void flush();
     },
     async close() {
