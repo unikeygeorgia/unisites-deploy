@@ -15,6 +15,7 @@ import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+const APP_OUTPUT = ".cloudflare/output/v0/workers/default";
 const UNISITES = (process.env.INPUT_URL || "https://app.unisites.ge").replace(/\/+$/, "");
 const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
 
@@ -152,9 +153,20 @@ async function buildOne(job) {
     console.log("::endgroup::");
   }
 
-  const output = resolve(dir, job.output || "dist");
+  // An app's build is a Worker: Cloudflare's Build Output, as vinext and the
+  // Cloudflare Vite plugin write it. A site's is a folder of pages.
+  const app = job.kind === "app";
+  const where = job.output || (app ? APP_OUTPUT : "dist");
+  const output = resolve(dir, where);
   if (!existsSync(output) || !statSync(output).isDirectory()) {
-    return failed(`the built site is not at ${job.output || "dist"}/`);
+    return failed(
+      app
+        ? `the app's Worker build is not at ${where}/: build it with vinext (Cloudflare's Vite plugin)`
+        : `the built site is not at ${where}/`,
+    );
+  }
+  if (app && !existsSync(join(output, "worker.config.json"))) {
+    return failed(`${where}/worker.config.json is missing: this is not a Worker build`);
   }
   const zip = join(tmpdir(), `unisites-${job.slug}.zip`);
   if ((await run(`rm -f "${zip}" && zip -r -q -X "${zip}" .`, output, log, true)) !== 0) {

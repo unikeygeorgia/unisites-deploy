@@ -33,3 +33,8 @@ run, and Unisites accepts an upload only for the sites that follow this
 repository's branch. How the site is built (install, build, the folder it
 ends up in) is set on Unisites; anything not set is worked out from the
 repository (`npm ci`, `pnpm`, `yarn`, `npm run build`, `dist/`).
+
+An app with a server (Next.js on [vinext](https://github.com/cloudflare/vinext))
+is built the same way; its build is a Worker (Cloudflare's Build Output,
+`.cloudflare/output/v0/workers/default`), which Unisites deploys as the app's
+own Worker, with the bindings and secrets set there.
