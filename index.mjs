@@ -10,12 +10,29 @@
 // says which repository and commit this is. Unisites takes uploads only for
 // the sites of this repository. The workflow needs `permissions: id-token: write`.
 // Node's own modules only, so there is nothing to install.
-import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
+// An app's build, in the order it is looked for (ADR 0027 on Unisites):
+// Cloudflare's Build Output, as vinext writes it;
 const APP_OUTPUT = ".cloudflare/output/v0/workers/default";
+// the Cloudflare Vite plugin's note of the Wrangler build it wrote (Astro,
+// React Router, any Vite project), which `wrangler deploy` follows too;
+const VITE_DEPLOY = ".wrangler/deploy/config.json";
+// the project's own Wrangler config, bundled by `wrangler deploy --dry-run`.
+const WRANGLER_CONFIGS = ["wrangler.jsonc", "wrangler.json"];
 const UNISITES = (process.env.INPUT_URL || "https://app.unisites.ge").replace(/\/+$/, "");
 const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
 
@@ -132,6 +149,169 @@ function buildOf(dir) {
   return pkg.scripts?.build ? "npm run build" : "";
 }
 
+/** A JSON file that may have comments and trailing commas, as wrangler.jsonc does. */
+function parseJsonc(text) {
+  let out = "";
+  // Where a comma was written that only whitespace and comments have followed.
+  let comma = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j;
+      comma = -1;
+    } else if (c === "/" && text[i + 1] === "/") {
+      while (i + 1 < text.length && text[i + 1] !== "\n") i += 1;
+    } else if (c === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end < 0 ? text.length : end + 1;
+    } else if ((c === "}" || c === "]") && comma >= 0) {
+      out = out.slice(0, comma) + out.slice(comma + 1) + c;
+      comma = -1;
+    } else {
+      if (c === ",") comma = out.length;
+      else if (!/\s/.test(c)) comma = -1;
+      out += c;
+    }
+  }
+  return JSON.parse(out);
+}
+
+const inside = (dir, path) => {
+  const rel = relative(dir, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
+
+/** The folder both are in. */
+function commonFolder(a, b) {
+  let common = a;
+  while (!inside(common, b)) common = dirname(common);
+  return common;
+}
+
+/** Whether git keeps the file: then it is the repository's, not this build's. */
+function tracked(dir, path) {
+  const result = spawnSync("git", ["ls-files", "--error-unmatch", relative(dir, path)], {
+    cwd: dir,
+    stdio: "ignore",
+  });
+  return result.status === 0;
+}
+
+/** Copies a build's folders into one, as they lie next to each other. */
+function stage(slug, root, folders) {
+  const at = join(tmpdir(), `unisites-${slug}-build`);
+  rmSync(at, { force: true, recursive: true });
+  mkdirSync(at, { recursive: true });
+  for (const folder of new Set(folders)) {
+    cpSync(folder, join(at, relative(root, folder)), { recursive: true });
+  }
+  return at;
+}
+
+/** The migrations folder of a Wrangler config's first database, else migrations/ beside package.json. */
+function migrationsOf(dir, config, configDir) {
+  const own = config?.d1_databases?.find((d) => typeof d?.migrations_dir === "string");
+  const found = own ? resolve(configDir, own.migrations_dir) : join(dir, "migrations");
+  return existsSync(found) && statSync(found).isDirectory() ? found : null;
+}
+
+/**
+ * An app's build, found: the folder to zip, and where its database's
+ * migrations are. A Wrangler build goes up as its config's folder and its
+ * assets' folder, side by side as the build left them; Unisites reads the
+ * rest from its wrangler.json.
+ */
+async function appBuild(job, dir, log) {
+  if (job.output) {
+    const output = resolve(dir, job.output);
+    if (!existsSync(output) || !statSync(output).isDirectory()) {
+      return { problem: `the app's build is not at ${job.output}/` };
+    }
+    return { folder: output, migrations: migrationsOf(dir, null, dir) };
+  }
+
+  const buildOutput = join(dir, APP_OUTPUT);
+  if (existsSync(join(buildOutput, "worker.config.json"))) {
+    log.line(`+ ${APP_OUTPUT}/ (Cloudflare's Build Output)`);
+    return { folder: buildOutput, migrations: migrationsOf(dir, null, dir) };
+  }
+
+  const pointer = join(dir, VITE_DEPLOY);
+  if (existsSync(pointer) && !tracked(dir, pointer)) {
+    const note = JSON.parse(readFileSync(pointer, "utf8"));
+    if ((note.auxiliaryWorkers ?? []).length > 0) {
+      return { problem: "the build has more than one Worker; Unisites runs one per app" };
+    }
+    const configPath = resolve(dirname(pointer), note.configPath ?? "");
+    if (!existsSync(configPath)) {
+      return { problem: `${VITE_DEPLOY} names ${note.configPath}, which the build did not write` };
+    }
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    const configDir = dirname(configPath);
+    const assets =
+      typeof config.assets?.directory === "string"
+        ? resolve(configDir, config.assets.directory)
+        : null;
+    const root = assets ? commonFolder(configDir, assets) : configDir;
+    if (!inside(dir, root)) {
+      return { problem: `${relative(dir, configPath)}: its assets are outside the project` };
+    }
+    log.line(`+ ${relative(dir, configPath)} (the Cloudflare Vite plugin's build)`);
+    const folders = [configDir, ...(assets && existsSync(assets) ? [assets] : [])];
+    return {
+      folder: stage(job.slug, root, folders),
+      migrations: migrationsOf(dir, config, configDir),
+    };
+  }
+
+  const own = WRANGLER_CONFIGS.map((name) => join(dir, name)).find((path) => existsSync(path));
+  if (!own) {
+    return {
+      problem: existsSync(join(dir, "wrangler.toml"))
+        ? "Unisites reads wrangler.jsonc or wrangler.json, not wrangler.toml: write the config as JSON (wrangler takes both)"
+        : `the app's Worker build was not found: neither ${APP_OUTPUT}/ (vinext), nor ${VITE_DEPLOY} (the Cloudflare Vite plugin, as Astro's adapter uses it), nor a wrangler.jsonc with its main module`,
+    };
+  }
+  let config;
+  try {
+    config = parseJsonc(readFileSync(own, "utf8"));
+  } catch (error) {
+    return { problem: `${basename(own)} is not JSON: ${error.message}` };
+  }
+  if (typeof config.main !== "string") {
+    return { problem: `${basename(own)} has no main module to bundle` };
+  }
+  // The Worker bundled as wrangler deploy would, written beside its config, its assets beside it.
+  const at = stage(job.slug, dir, []);
+  const server = join(at, "server");
+  const bundled = await run(
+    `npx --yes wrangler deploy --dry-run --outdir "${server}"`,
+    dir,
+    log,
+  );
+  if (bundled !== 0) return { problem: `wrangler deploy --dry-run exited with ${bundled}` };
+  const entry = `${basename(config.main).replace(/\.[^.]+$/, "")}.js`;
+  if (!existsSync(join(server, entry))) {
+    return { problem: `wrangler wrote no ${entry} for ${config.main}` };
+  }
+  const assets =
+    typeof config.assets?.directory === "string" ? resolve(dir, config.assets.directory) : null;
+  if (assets && existsSync(assets)) cpSync(assets, join(at, "client"), { recursive: true });
+  writeFileSync(
+    join(server, "wrangler.json"),
+    JSON.stringify({
+      ...config,
+      ...(config.assets ? { assets: { ...config.assets, directory: "../client" } } : {}),
+      main: entry,
+    }),
+  );
+  log.line(`+ ${basename(own)} (bundled by wrangler)`);
+  return { folder: at, migrations: migrationsOf(dir, config, dir) };
+}
+
 async function buildOne(job) {
   const dir = resolve(workspace, job.folder || ".");
   const log = logSender(job.slug);
@@ -153,29 +333,36 @@ async function buildOne(job) {
     console.log("::endgroup::");
   }
 
-  // An app's build is a Worker: Cloudflare's Build Output, as vinext and the
-  // Cloudflare Vite plugin write it. A site's is a folder of pages.
+  // An app's build is a Worker (appBuild); a site's is a folder of pages.
   const app = job.kind === "app";
-  const where = job.output || (app ? APP_OUTPUT : "dist");
-  const output = resolve(dir, where);
-  if (!existsSync(output) || !statSync(output).isDirectory()) {
-    return failed(
-      app
-        ? `the app's Worker build is not at ${where}/: build it with vinext (Cloudflare's Vite plugin)`
-        : `the built site is not at ${where}/`,
-    );
-  }
-  if (app && !existsSync(join(output, "worker.config.json"))) {
-    return failed(`${where}/worker.config.json is missing: this is not a Worker build`);
+  let output;
+  let migrations = null;
+  if (app) {
+    const found = await appBuild(job, dir, log);
+    if (found.problem) return failed(found.problem);
+    ({ folder: output, migrations } = found);
+  } else {
+    const where = job.output || "dist";
+    output = resolve(dir, where);
+    if (!existsSync(output) || !statSync(output).isDirectory()) {
+      return failed(`the built site is not at ${where}/`);
+    }
   }
   const zip = join(tmpdir(), `unisites-${job.slug}.zip`);
   if ((await run(`rm -f "${zip}" && zip -r -q -X "${zip}" .`, output, log, true)) !== 0) {
     return failed("the built site could not be zipped");
   }
   // An app's schema travels with its build: Unisites applies what is new on deploy.
-  if (app && existsSync(join(dir, "migrations"))) {
-    log.line("+ migrations/");
-    if ((await run(`zip -r -q -X "${zip}" migrations -i 'migrations/*.sql'`, dir, log, true)) !== 0) {
+  const sql = migrations
+    ? readdirSync(migrations).filter((name) => name.endsWith(".sql"))
+    : [];
+  if (sql.length > 0) {
+    log.line(`+ migrations/ (${relative(dir, migrations) || "."}, ${sql.length})`);
+    const carried = join(tmpdir(), `unisites-${job.slug}-migrations`);
+    rmSync(carried, { force: true, recursive: true });
+    mkdirSync(join(carried, "migrations"), { recursive: true });
+    for (const name of sql) cpSync(join(migrations, name), join(carried, "migrations", name));
+    if ((await run(`zip -r -q -X "${zip}" migrations`, carried, log, true)) !== 0) {
       return failed("the migrations could not be added");
     }
   }
