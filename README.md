@@ -40,3 +40,25 @@ is built the same way; its build is a Worker (Cloudflare's Build Output,
 own Worker, with the bindings and secrets set there. Its database schema is
 its `migrations/*.sql` (next to `package.json`), applied on Unisites in order,
 each once, before the version goes live.
+
+## Without GitHub Actions: a computer, or Cloudflare Workers Builds
+
+The same command builds and uploads anywhere else with the site's **deploy
+key**: app.unisites.ge → the site → Settings → "Deploy keys" → "Make a key".
+The key is shown once; keep it like a password.
+
+On a computer, inside the repository, on the site's branch, with everything
+committed and pushed:
+
+```bash
+UNISITES_KEY=usk_… npx -y github:unikeygeorgia/unisites-deploy
+```
+
+On Cloudflare Workers Builds (a Worker connected to the repository): set
+`UNISITES_KEY` as a build secret, and the build command to
+`npx -y github:unikeygeorgia/unisites-deploy`. The branch and commit come from
+`WORKERS_CI_BRANCH` and `WORKERS_CI_COMMIT_SHA`.
+
+Either way, the commit must already be on GitHub, on one of the site's
+branches, so every version names a commit anyone can read; a key uploads to
+its own site only. `UNISITES_URL` points it at another Unisites.

@@ -1,4 +1,6 @@
-// Unisites deploy: one step in a repository's GitHub Actions workflow.
+#!/usr/bin/env node
+// Unisites deploy: one step in a repository's GitHub Actions workflow, or one
+// command on a computer or in Cloudflare Workers Builds.
 //
 // 1. Asks Unisites which of its sites follow this repository's branch, and how
 //    each is built (set on app.unisites.ge; worked out here when not set).
@@ -6,21 +8,54 @@
 //    where the site's page shows it as it comes.
 // 3. Zips the built folder and uploads it: Unisites makes it a version.
 //
-// There is no key: every call carries GitHub's OIDC token for this run, which
-// says which repository and commit this is. Unisites takes uploads only for
-// the sites of this repository. The workflow needs `permissions: id-token: write`.
+// On GitHub Actions there is no key: every call carries GitHub's OIDC token for
+// this run, which says which repository and commit this is. Unisites takes
+// uploads only for the sites of this repository. The workflow needs
+// `permissions: id-token: write`.
+//
+// Anywhere else, the site's deploy key (made on app.unisites.ge, the site's
+// Settings) is in UNISITES_KEY, and the branch and commit come from git, or
+// from Cloudflare Workers Builds' own variables. The commit must be on GitHub
+// already, and a computer's working tree clean, so a version always names
+// the commit it was built from:
+//
+//   UNISITES_KEY=usk_… npx -y github:unikeygeorgia/unisites-deploy
+//
 // Node's own modules only, so there is nothing to install.
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const APP_OUTPUT = ".cloudflare/output/v0/workers/default";
-const UNISITES = (process.env.INPUT_URL || "https://app.unisites.ge").replace(/\/+$/, "");
-const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
+const UNISITES = (process.env.INPUT_URL || process.env.UNISITES_URL || "https://app.unisites.ge").replace(
+  /\/+$/,
+  "",
+);
+const KEY = process.env.UNISITES_KEY || "";
+const ON_GITHUB = process.env.GITHUB_ACTIONS === "true";
+const ON_CLOUDFLARE = Boolean(process.env.WORKERS_CI);
+
+function git(...args) {
+  try {
+    return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
+const workspace = process.env.GITHUB_WORKSPACE || git("rev-parse", "--show-toplevel") || process.cwd();
+
+/** With a deploy key: the branch and commit this build is of, as Unisites is told. */
+const at = KEY
+  ? {
+      branch: process.env.WORKERS_CI_BRANCH || git("rev-parse", "--abbrev-ref", "HEAD"),
+      commit: process.env.WORKERS_CI_COMMIT_SHA || git("rev-parse", "HEAD"),
+    }
+  : null;
 
 function fail(message) {
-  console.log(`::error::${message}`);
+  console.log(ON_GITHUB ? `::error::${message}` : `✗ ${message}`);
   process.exitCode = 1;
 }
 
@@ -43,9 +78,18 @@ async function runToken() {
 }
 
 async function call(path, body, contentType = "application/json") {
+  const headers = at
+    ? {
+        authorization: `Bearer ${KEY}`,
+        "content-type": contentType,
+        "x-unisites-branch": at.branch,
+        "x-unisites-builder": ON_CLOUDFLARE ? "cloudflare" : "computer",
+        "x-unisites-commit": at.commit,
+      }
+    : { authorization: `Bearer ${await runToken()}`, "content-type": contentType };
   const response = await fetch(`${UNISITES}/api/github/builds/${path}`, {
     body,
-    headers: { authorization: `Bearer ${await runToken()}`, "content-type": contentType },
+    headers,
     method: "POST",
   });
   const answer = await response.json().catch(() => ({}));
@@ -199,7 +243,23 @@ async function buildOne(job) {
   );
 }
 
+/** A computer's build must be of a commit as it is: nothing changed, nothing unpushed. */
+function readyHere() {
+  if (!at || ON_CLOUDFLARE) return true;
+  if (!at.commit || !at.branch || at.branch === "HEAD") {
+    fail("Run this inside the repository, on the site's branch.");
+    return false;
+  }
+  if (git("status", "--porcelain")) {
+    fail("The working tree has changes: commit them (and push) first, so the version is that commit.");
+    return false;
+  }
+  return true;
+}
+
 try {
+  if (!readyHere()) process.exit(1);
+  if (at) console.log(`${at.branch} @ ${at.commit.slice(0, 7)} → ${UNISITES}`);
   const { answer, ok, status } = await call("start", "{}");
   if (!ok) throw new Error(answer.error ?? `Unisites answered ${status}`);
   for (const skip of answer.skipped ?? []) console.log(`– ${skip.slug}: ${skip.reason}`);
