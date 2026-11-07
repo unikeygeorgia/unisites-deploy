@@ -1,11 +1,11 @@
 # Unisites deploy
 
 Builds a repository on GitHub Actions and puts the result on
-[Unisites](https://app.unisites.ge): every push to the site's branch becomes a
+[Unisites](https://app.unisite.ge): every push to the site's branch becomes a
 new version there, with its commit, and the build's log shows on the site's
 page as it runs.
 
-Connect the repository on app.unisites.ge ("New site" → GitHub). The site's
+Connect the repository on app.unisite.ge ("New site" → GitHub). The site's
 Versions page gives the workflow to add, `.github/workflows/unisites.yml`:
 
 ```yaml
@@ -44,7 +44,7 @@ each once, before the version goes live.
 ## Without GitHub Actions: a computer, or Cloudflare Workers Builds
 
 The same command builds and uploads anywhere else with the site's **deploy
-key**: app.unisites.ge → the site → Settings → "Deploy keys" → "Make a key".
+key**: app.unisite.ge → the site → Settings → "Deploy keys" → "Make a key".
 The key is shown once; keep it like a password.
 
 On a computer, inside the repository, on the site's branch, with everything

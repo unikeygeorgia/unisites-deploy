@@ -3,7 +3,7 @@
 // command on a computer or in Cloudflare Workers Builds.
 //
 // 1. Asks Unisites which of its sites follow this repository's branch, and how
-//    each is built (set on app.unisites.ge; worked out here when not set).
+//    each is built (set on app.unisite.ge; worked out here when not set).
 // 2. Builds each one, printing every line here and sending it to Unisites,
 //    where the site's page shows it as it comes.
 // 3. Zips the built folder and uploads it: Unisites makes it a version.
@@ -13,7 +13,7 @@
 // uploads only for the sites of this repository. The workflow needs
 // `permissions: id-token: write`.
 //
-// Anywhere else, the site's deploy key (made on app.unisites.ge, the site's
+// Anywhere else, the site's deploy key (made on app.unisite.ge, the site's
 // Settings) is in UNISITES_KEY, and the branch and commit come from git, or
 // from Cloudflare Workers Builds' own variables. The commit must be on GitHub
 // already, and a computer's working tree clean, so a version always names
@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const APP_OUTPUT = ".cloudflare/output/v0/workers/default";
-const UNISITES = (process.env.INPUT_URL || process.env.UNISITES_URL || "https://app.unisites.ge").replace(
+const UNISITES = (process.env.INPUT_URL || process.env.UNISITES_URL || "https://app.unisite.ge").replace(
   /\/+$/,
   "",
 );
